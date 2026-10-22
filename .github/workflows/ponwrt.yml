@@ -32,10 +32,8 @@ jobs:
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
-      matrix:
-        target: [zn504, an7583]
     env:
-      CONFIG_FILE: ${{ matrix.target }}.config
+      CONFIG_FILE: zn504.config
 
     steps:
     - name: Checkout
@@ -114,7 +112,7 @@ jobs:
     - name: Generate artifact name
       id: name
       if: steps.compile.outputs.status == 'success' && !cancelled()
-      run: echo "name=DEV-$(date +%Y-%m-%d)-${{ matrix.target }}" >> "$GITHUB_OUTPUT"
+      run: echo "name=DEV-$(date +%Y-%m-%d)-zn504" >> "$GITHUB_OUTPUT"
 
     - name: Upload firmware artifact
       uses: actions/upload-artifact@v4
@@ -124,8 +122,8 @@ jobs:
         retention-days: 3
         if-no-files-found: error
         path: |
-          openwrt/bin/targets/airoha/${{ matrix.target }}/*initramfs-recovery.itb
-          openwrt/bin/targets/airoha/${{ matrix.target }}/*squashfs-sysupgrade.itb
+          openwrt/bin/targets/airoha/zn504/*initramfs-recovery.itb
+          openwrt/bin/targets/airoha/zn504/*squashfs-sysupgrade.itb
 
   cleanup:
     needs: [build]
