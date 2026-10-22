@@ -1,0 +1,148 @@
+#
+# https://github.com/P3TERX/Actions-OpenWrt
+#
+# File: .github/workflows/ponwrt.yml
+# Description: Build PonWrt (AN7581 / AN7583) as DEV artifacts
+#
+# Copyright (c) 2019-2024 P3TERX <https://p3terx.com>
+#
+# This is free software, licensed under the MIT License.
+# See /LICENSE for more information.
+#
+
+name: DEV Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      ssh:
+        type: boolean
+        default: false
+
+env:
+  REPO_URL: https://github.com/1018ji/ponwrt
+  REPO_BRANCH: master
+  FEEDS_CONF: feeds.conf.default
+  DIY_P1_SH: diy-part1.sh
+  DIY_P2_SH: diy-part2.sh
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [zn504, an7583]
+    env:
+      CONFIG_FILE: ${{ matrix.target }}.config
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Initialization environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+        sudo docker image prune --all --force
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp ninja-build p7zip p7zip-full patch pkgconf python2.7 python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        sudo timedatectl set-timezone "$TZ"
+        sudo mkdir -p /workdir
+        sudo chown $USER:$GROUPS /workdir
+
+    - name: Clone source code
+      working-directory: /workdir
+      run: |
+        df -hT $PWD
+        git clone $REPO_URL -b $REPO_BRANCH openwrt
+        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+
+    - name: Load custom feeds
+      run: |
+        [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
+        chmod +x $DIY_P1_SH
+        cd openwrt
+        $GITHUB_WORKSPACE/$DIY_P1_SH
+
+    - name: Update feeds
+      run: cd openwrt && ./scripts/feeds update -a
+
+    - name: Install feeds
+      run: cd openwrt && ./scripts/feeds install -a
+
+    - name: Load custom configuration
+      run: |
+        [ -e files ] && mv files openwrt/files
+        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
+        chmod +x $DIY_P2_SH
+        cd openwrt
+        $GITHUB_WORKSPACE/$DIY_P2_SH
+
+    - name: Download package
+      id: package
+      run: |
+        cd openwrt
+        make defconfig
+        make download -j$(nproc)
+        find dl -size -1024c -exec ls -l {} \;
+        find dl -size -1024c -exec rm -f {} \;
+
+    - name: Setup SSH session
+      if: ${{ github.event_name == 'workflow_dispatch' && inputs.ssh }}
+      uses: owenthereal/action-upterm@v2
+      with:
+        detached: true
+        limit-access-to-actor: true
+
+    - name: Compile the firmware
+      id: compile
+      run: |
+        cd openwrt
+        echo -e "$(nproc) thread compile"
+        make -j$(nproc) || make -j1 V=s
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: Check space usage
+      if: (!cancelled())
+      run: df -hT
+
+    - name: Generate artifact name
+      id: name
+      if: steps.compile.outputs.status == 'success' && !cancelled()
+      run: echo "name=DEV-$(date +%Y-%m-%d)-${{ matrix.target }}" >> "$GITHUB_OUTPUT"
+
+    - name: Upload firmware artifact
+      uses: actions/upload-artifact@v4
+      if: steps.name.outputs.name != '' && !cancelled()
+      with:
+        name: ${{ steps.name.outputs.name }}
+        retention-days: 3
+        if-no-files-found: error
+        path: |
+          openwrt/bin/targets/airoha/${{ matrix.target }}/*initramfs-recovery.itb
+          openwrt/bin/targets/airoha/${{ matrix.target }}/*squashfs-sysupgrade.itb
+
+  cleanup:
+    needs: [build]
+    if: always()
+    runs-on: ubuntu-22.04
+    permissions:
+      actions: write
+
+    steps:
+    - name: Keep latest 7 workflow runs
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        gh run list --workflow "${{ github.workflow }}" --status completed --limit 200 --json databaseId,createdAt \
+          --jq 'sort_by(.createdAt) | reverse | .[6:] | .[].databaseId' |
+        while read -r ID; do
+          echo "deleting workflow run $ID"
+          gh run delete "$ID"
+        done
